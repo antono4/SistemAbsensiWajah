@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Face Attendance — Panduan Arsitektur, Skema DB, dan Kode Modul</title>
+<style>
+:root{
+  --primary:#1a73e8; --dark:#0f172a; --accent:#10b981; --bg:#f8fafc; --card:#ffffff; --muted:#64748b;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--dark);line-height:1.6}
+.wrap{max-width:1100px;margin:0 auto;padding:32px 20px 80px}
+header.hero{background:linear-gradient(135deg,#0f172a 0%,#1a73e8 100%);color:#fff;border-radius:20px;padding:48px 40px;margin-bottom:36px}
+header.hero h1{font-size:2rem;margin-bottom:8px}
+header.hero p{opacity:.9;font-size:1.05rem}
+.badge{display:inline-block;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);padding:4px 14px;border-radius:999px;font-size:.8rem;margin:6px 6px 0 0}
+h2{font-size:1.45rem;margin:48px 0 16px;padding-bottom:10px;border-bottom:3px solid var(--primary);display:inline-block}
+h3{font-size:1.1rem;margin:28px 0 10px;color:var(--primary)}
+.card{background:var(--card);border:1px solid #e2e8f0;border-radius:14px;padding:24px;margin:16px 0;box-shadow:0 1px 3px rgba(15,23,42,.06)}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:.92rem}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #e2e8f0}
+th{background:#f1f5f9;font-weight:600}
+code{background:#eef2ff;color:#1a4bb0;padding:2px 6px;border-radius:6px;font-family:'JetBrains Mono',Consolas,monospace;font-size:.88em}
+pre{background:#0f172a;color:#d1e8ff;padding:18px 20px;border-radius:12px;overflow-x:auto;font-size:.82rem;line-height:1.5;margin:12px 0}
+pre code{background:none;color:inherit;padding:0}
+.toc{columns:2;gap:24px;font-size:.95rem}
+.toc li{margin:6px 0;list-style:none;counter-increment:item}
+.toc li a{color:var(--primary);text-decoration:none}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:860px){.grid2{grid-template-columns:1fr}.toc{columns:1}}
+.endpoint{font-family:monospace;font-weight:600;color:#0b3d91}
+.flow{background:#eef7ff;border-left:4px solid var(--accent);padding:14px 18px;border-radius:0 10px 10px 0;margin:12px 0}
+.note{background:#fffbeb;border:1px solid #fde68a;padding:12px 16px;border-radius:10px;font-size:.9rem;margin:12px 0}
+footer{margin-top:60px;text-align:center;color:var(--muted);font-size:.85rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Face Attendance — Sistem Absensi Wajah</h1>
+  <p>Panduan arsitektur, skema database, dan kode modul utama — Backend FastAPI + PostgreSQL (pgvector); Frontend React/Next.js</p>
+  <span class="badge">Python FastAPI</span><span class="badge">PostgreSQL + pgvector</span><span class="badge">dlib / face_recognition</span><span class="badge">Next.js</span><span class="badge">Anti-Spoofing</span>
+</header>
+
+<nav class="card">
+  <h3>Daftar Isi</h3>
+  <ol class="toc">
+    <li><a href="#arsitektur">1. Arsitektur Sistem</a></li>
+    <li><a href="#skema">2. Skema Database</a></li>
+    <li><a href="#struktur">3. Struktur Direktori</a></li>
+    <li><a href="#api">4. API Endpoints</a></li>
+    <li><a href="#flow">5. Alur Registrasi & Absensi</a></li>
+    <li><a href="#backend">6. Backend: Modul Kode Utama</a></li>
+    <li><a href="#liveness">7. Anti-Spoofing / Liveness</a></li>
+    <li><a href="#frontend">8. Frontend: Kamera & Kirim Gambar</a></li>
+    <li><a href="#instalasi">9. Instalasi & Menjalankan</a></li>
+    <li><a href="#produksi">10. Catatan Produksi</a></li>
+  </ol>
+</nav>
+
+<h2 id="arsitektur">1. Arsitektur Sistem</h2>
+<div class="card">
+  <pre><code>┌──────────────┐      ┌──────────────────────────────────────┐
+│  Next.js/React │      │              FastAPI                         │
+│  (Web App)   │      │  /api/register-face                      │
+│  Kamera+Preview │ ───► │  /api/attendance/check-in | check-out  │
+│  WebSocket WS   │      │  /api/reports/daily | export             │
+└──────────────┘      │  Service: face_service | liveness       │
+                       │  Repository: SQLAlchemy + pgvector        │
+                       └──────────────┬──────────────────────────────────┘
+                                      │
+                       ┌──────────────▼──────────────┐
+                       │   PostgreSQL + pgvector     │
+                       │   users | face_embeddings  │
+                       │   attendance_logs            │
+                       └─────────────────────────────┘</code></pre>
+  <p><strong>Komponen utama:</strong></p>
+  <ul>
+    <li><strong>Client:</strong> React/Next.js — menangkap foto, preview, mengirim base64, dan menampilkan hasil.</li>
+    <li><strong>API Layer:</strong> FastAPI — endpoint REST + WebSocket untuk liveness challenge.</li>
+    <li><strong>Service Layer:</strong> face_service (ekstraksi embedding 128-d dlib); liveness (EAR blink detection).</li>
+    <li><strong>Data Layer:</strong> PostgreSQL + ekstensi <code>pgvector</code> — penyimpanan vektor 128-d untuk pencarian kemiripan.</li>
+    <li><strong>Anti-Spoofing:</strong> 3 lapis — ① blink (EAR;, ② refleksi/glare, ③ cadence acak arah gerakan kepala.</li>
+  </ul>
+</div>
+
+<h2 id="skema">2. Skema Database</h2>
+<div class="card">
+  <pre><code>CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE users (
+    id            BIGSERIAL PRIMARY KEY,
+    employee_id  VARCHAR(32) UNIQUE NOT NULL,
+    full_name    VARCHAR(120) NOT NULL,
+    email        VARCHAR(160) UNIQUE,
+    department   VARCHAR(80),
+    position     VARCHAR(80),
+    status       VARCHAR(20) NOT NULL DEFAULT 'active'
+                 CHECK (status IN ('active','inactive','terminated')),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE face_embeddings (
+    id            BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    embedding    vector(128) NOT NULL,
+    model        VARCHAR(40) NOT NULL DEFAULT 'dlib-face_recognition',
+    quality_score FLOAT NOT NULL DEFAULT 1.0,
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    source_image TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_faces_vec_hnsw ON face_embeddings
+    USING hnsw (embedding vector_cosine_ops);
+
+CREATE TABLE attendance_logs (
+    id            BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    check_type   VARCHAR(10) NOT NULL CHECK (check_type IN ('check-in','check-out')),
+    check_time   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    work_date    DATE NOT NULL,
+    confidence    FLOAT NOT NULL,  -- cosine_distance saat match
+    match_embedding_id BIGINT REFERENCES face_embeddings(id) ON DELETE SET NULL,
+    source_image TEXT,
+    liveness_passed BOOLEAN NOT NULL DEFAULT true,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, check_type, work_date)
+);
+
+CREATE INDEX idx_attendance_user_time
+    ON attendance_logs (user_id, check_time DESC);</code></pre>
+  <div class="note">Catatan: kolom <code>source_image</code> menyimpan path/URL di object storage — bukan data biner di DB. Indeks HNSW dipakai karena dataset >10K embedding; untuk &lt;1M wajah bisa pakai IVFFlat yang lebih hemat memori.</div>
+</div>
+
+<h2 id="struktur">3. Struktur Direktori Proyek</h2>
+<div class="card">
+  <pre><code>.
+├── backend/
+│   ├── app/
+│   │   ├── main.py                 # bootstrap FastAPI, CORS, router
+│   │   ├── core/
+│   │   │   ├── config.py           # settings (.env)
+│   │   │   └── database.py        # engine + session + pgvector
+│   │   ├── models/
+│   │   │   ├── base.py            # DeclarativeBase + naming convention
+│   │   │   └── entities.py       # User, FaceEmbedding, AttendanceLog
+│   │   ├── schemas/              # Pydantic DTO
+│   │   ├── services/
+│   │   │   ├── face_service.py   # encoding 128-d + matching
+│   │   │   └── liveness.py       # EAR blink detection
+│   │   └── routers/
+│   │       ├── register.py        # POST /api/register-face
+│   │       ├── attendance.py      # check-in/out + liveness
+│   │       └── reports.py         # rekap harian & ekspor
+│   ├── requirements.txt
+│   ├── .env.example
+│   └── docker-compose.yml        # postgres + pgvector
+└── frontend/
+    ├── app/
+    │   ├── register/page.tsx
+    │   ├── attendance/page.tsx
+    │   └── admin/page.tsx
+    ├── components/
+    │   └── CameraCapture.tsx
+    └── lib/api.ts</code></pre>
+</div>
+
+<h2 id="api">4. API Endpoints</h2>
+<div class="card">
+  <table>
+    <tr><th>Method</th><th>Endpoint</th><th>Deskripsi</th></tr>
+    <tr><td>POST</td><td class="endpoint">/api/register-face</td><td>Deteksi wajah & simpan embedding 128-d + data user</td></tr>
+    <tr><td>POST</td><td class="endpoint">/api/attendance/check-in</td><td>Cari wajah terdekat → catat jam hadir</td></tr>
+    <tr><td>POST</td><td class="endpoint">/api/attendance/check-out</td><td>Pola sama, tipe check-out (idempotent per hari)</td></tr>
+    <tr><td>GET</td><td class="endpoint">/api/attendance/liveness/{user_id}</td><td>Challenge liveness: instruksi acak (lihat kiri/dll)</td></tr>
+    <tr><td>POST</td><td class="endpoint">/api/attendance/liveness/verify</td><td>Verifikasi kedipan (EAR) dari 3+ frame berurutan</td></tr>
+    <tr><td>GET</td><td class="endpoint">/api/reports/daily?date=YYYY-MM-DD</td><td>Rekap harian (JSON)</td></tr>
+    <tr><td>GET</td><td class="endpoint">/api/reports/export?format=xlsx&date=…</td><td>Download laporan Excel/PDF</td></tr>
+  </table>
+  <p><strong>Body contoh (register-face/check-in:)</strong></p>
+  <pre><code>{
+  "employee_id": "EMP-0001",     // hanya register-face
+  "full_name": "Budi Santoso",
+  "image": "&lt;multipart/file — jpg|png|webp&gt;"
+}</code></pre>
+</div>
+
+<h2 id="flow">5. Alur Registrasi & Absensi</h2>
+<div class="card">
+  <h3>Registrasi Wajah</h3>
+  <div class="flow">1. Unggah foto → 2. Deteksi wajah (harus tepat 1 wajah; ukuran crop ≥96px) → 3. Ekstraksi embedding 128-d (dlib, num_jitters=2) →  〖4. L2-normalisasi vektor →  〖5. Simpan ke <code>face_embeddings</code> + data user.</div>
+  <h3>Absensi Real-Time</h3>
+  <div class="flow">1. Kamera menangkap frame →  〖2. Liveness check (kedipan, challenge acak) →  〖3. Foto base64 dikirim ke API →  〖4. Ekstraksi embedding →  〖5. Pencarian nearest neighbor (cosine distance) di pgvector →〘6. Jika <code>distance ≤ 0.35</code> → catat log (user, check_type, work_date; idempotent — 409 jika sudah ada`.</div>
+</div>
+
+<h2 id="backend">6. Backend: Modul Kode Utama</h2>
+
+<h3>6.1 face_service.py — Ekstraksi & Pencocokan</h3>
+<div class="card">
+  <pre><code>"""Ekstraksi embedding wajah 128-d dan pencocokan (dlib/face_recognition)."""
+import base64, io
+import numpy as np  from PIL import Image
+try:
+    import face_recognition
+    _FR_AVAILABLE = True
+except ImportError:
+    _FR_AVAILABLE = False
+
+class FaceServiceError(Exception): pass
+
+def normalize_embedding(vec):
+    """L2-normalisasi agar jarak = cosine distance."""
+    norm = np.linalg.norm(vec)
+    if norm == 0: raise FaceServiceError("Embedding nol")
+    return (vec / norm).astype(np.float32)
+
+def load_image_b64(b64):
+    raw = base64.b64decode(b64, validate=True)
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    return np.asarray(img), img
+
+def encode_single_face(rgb):
+    """1 wajah; tolak bila &gt;1 wajah."""
+    faces = detect_faces(rgb)
+    if len(faces) > 1:
+        raise FaceServiceError("Terlalu banyak wajah — pastikan 1 orang")
+    return faces[0]
+
+def detect_faces(rgb):
+    face_locations = face_recognition.face_locations(rgb, model="hog"))
+    if not face_locations:
+        raise FaceServiceError("Tidak ada wajah terdeteksi")
+    encodings = face_recognition.face_encodings(rgb, known_face_locations=face_locations, num_jitters=2)
+    faces = []
+    for (top, right, bottom, left), enc in zip(face_locations, encodings:
+        w, h = right-left, bottom-top
+        if min(w,h) < 96: continue
+        faces.append(DetectedFace(normalize_embedding(enc), bbox=(top,right,bottom,left))
+    if not faces: raise FaceServiceError("Wajah terlalu kecil")
+    return faces
+
+def match_face(query, candidates, threshold=0.35:
+    best, best_dist = None, float("inf")
+    for key, vec in candidates:
+        cos_dist = 1.0 - float(np.dot(query, vec))  # krn L2-normalized
+        if cos_dist < best_dist: best, best_dist = key, cos_dist
+    if best is None or cos_dist > threshold:
+        return None, None, False
+    return best, best_dist, True</code></pre>
+</div>
+
+<h3>6.2 Router register.py — POST /api/register-face</h3>
+<div class="card">
+  <pre><code>from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.models.entities import FaceEmbedding, User
+from app.schemas import FaceEnrollResult, UserCreate
+from app.services import face_service
+
+router = APIRouter(prefix="/register-face", tags=["Face Registration"])
+
+@router.post("", response_model=FaceEnrollResult, status_code=201)
+def register_face(
+    payload: UserCreate,
+    db: Session = Depends(get_db),
+    image: UploadFile = File(...),
+):
+    existing = db.query(User).filter(User.employee_id == payload.employee_id).first()
+    if existing: raise HTTPException(409, detail="employee_id sudah terdaftar")
+
+    # 1) Decode gambar & ekstrak embedding
+    data = image.file.read()            # + size-limit wrap
+    b64 = base64.b64encode(data).decode()
+    rgb, _ = face_service.load_image_b64(b64)
+    try:
+        face = face_service.encode_single_face(rgb)
+    except FaceServiceError as e: raise HTTPException(422,, detail=str(e)
+
+    # 2) Simpan user + embedding (satu transaksi)
+    user = User(employee_id=payload.employee_id, full_name=payload.full_name, email=payload.email,
+                  department=payload.department, position=payload.position)
+    db.add(user); db.flush()
+    emb = FaceEmbedding(user_id=user.id, embedding=face.embedding.tolist(), quality_score=face.quality_score)
+    db.add(emb); db.commit(); db.refresh(user); db.refresh(emb)
+
+    return FaceEnrollResult(user_id=user.id, embedding_id=emb.id, full_name=user.full_name,
+                             dimensions=128, model=emb.model, quality_score=emb.quality_score)</code></pre>
+</div>
+
+<h3>6.3 Router attendance.py — check-in & check-out</h3>
+<div class="card">
+  <pre><code>@router.post("/check-in", response_model=AttendanceResult)
+def check_in(payload: AttendanceCheckInOut, db: Session = Depends(get_db):
+    """Ambil foto kamera → match wajah → catat log hadir (idempotent)."""
+    user, distance, emb_id = _match_or_404(db, payload.image_b64)
+    log, status = _save_log(db, user.id, "check-in", distance, emb_id, payload.image_b64)
+    if status == "already_logged":
+        raise HTTPException(409,, "Sudah absen masuk hari ini")
+    return _respond(log, user, distance, emb_id, "check-in"
+
+def _save_log(db, user_id, check_type, confidence, emb_id, source_b64:
+    work_date = datetime.now(timezone.utc).date()
+    dup = db.query(AttendanceLog).filter(
+        AttendanceLog.user_id == user_id,
+        AttendanceLog.check_type == check_type,
+        AttendanceLog.work_date == work_date,
+    ).first()
+    if dup: return None,, "already_logged"
+    log = AttendanceLog(user_id=user_id, check_type=check_type, work_date=work_date,
+                         confidence=confidence, match_embedding_id=emb_id, liveness_passed=True)
+    db.add(log); db.commit(); db.refresh(log)
+    return log,, "ok"
+
+def _match_or_404(db, b64:
+    rgb, _ = face_service.load_image_b64(b64)
+    query_emb = face_service.encode_single_face(rgb).embedding
+    key, cos_dist, matched = face_service.match_face(
+        query_emb, _candidate_vectors(db), settings.face_match_threshold)
+    if not matched: raise HTTPException(404,, "Wajah tidak dikenal")
+    user_id, emb_id = key
+    return db.get(User, user_id), cos_dist, emb_id
+
+def _candidate_vectors(db:
+    rows = db.query(FaceEmbedding.user_id, FaceEmbedding.id, FaceEmbedding.embedding).filter(
+        FaceEmbedding.is_active == True).all()
+    return [((r.user_id, r.id), r.embedding) for r in rows]</code></pre>
+</div>
+
+<h2 id="liveness">7. Anti-Spoofing / Liveness Detection</h2>
+<div class="card">
+  <p>Implementasi utama: <strong>Eye Aspect Ratio (EAR)</strong> — rasio jarak vertikal/horizontal mata. Saat kedipan, EAR turun drastis &lt; threshold (≈0.25).</p>
+  <pre><code>def _eye_aspect_ratio(eye):
+    A = np.linalg.norm(eye[1] - eye[5])
+    B = np.linalg.norm(eye[2] - eye[4])
+    C_ = np.linalg.norm(eye[0] - eye[3])
+    return A / (2.0 * (B + C_))   # ~0.25 normal, &lt;0.20 saat kedip
+
+def _check_blink(prev_ear, cur_ear, threshold=0.22):
+    return prev_ear > threshold and cur_ear < threshold          # transisi turun = kedip
+
+# Alur verify: 3+ frame berurutan → hitung EAR tiap frame →
+# jika ada ≥1 transisi naik-turun → liveness PASSED.</code></pre>
+  <div class="note">Di endpoint <code>/liveness/verify</code>, kirim list base64 frame berurutan. Di mode default (tanpa dlib shape predictor) endpoint menandai 3 frame sebagai OK — aktifkan predictor 68-landmark untuk verifikasi penuh.</div>
+</div>
+
+<h2 id="frontend">8. Frontend — Komponen Kamera & Kirim Data</h2>
+
+<h3>8.1 CameraCapture.tsx (React/Next.js)</h3>
+<div class="card">
+  <pre><code>"use client";
+import { useRef, useState, useCallback } from "react";
+
+export default function CameraCapture({ onCapture, facingMode = "user" }) {
+  const videoRef = useRef&lt;HTMLVideoElement&gt;(null);
+  const streamRef = useRef&lt;MediaStream | null&gt;(null);
+  const [ready, setReady] = useState(false);
+  const [snapshot, setSnapshot] = useState&lt;string | null&gt;(null);
+
+  const start = useCallback(async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    streamRef.current = stream;
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+      setReady(true);
+    }
+  }, [facingMode]);
+
+  const capture = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0);
+    // kompresi WebP agar payload ringan
+    const b64 = canvas.toDataURL("image/webp", 0.82).split(",")[1];
+    setSnapshot(b64);
+    onCapture?.(b64);
+  }, [onCapture]);
+
+  const stop = useCallback(() => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    setReady(false);
+  }, []);
+
+  useEffect(() => () => stop(), [stop]);   // cleanup unmount
+  ...
+}</code></pre>
+</div>
+
+<h3>8.2 lib/api.ts — Kirim Gambar ke API</h3>
+<div class="card">
+  <pre><code>const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api";
+
+export async function registerFace(employeeId, fullName, imageB64:
+  const fd = new FormData();
+  fd.append("employee_id", employeeId);
+  fd.append("full_name", fullName);
+  fd.append("image", dataURLtoBlob(imageB64), "webp"), "face.webp");
+  const res = await fetch(`${API}/register-face`, { method: "POST", body: fd });
+  if (!res.ok) throw new Error((await res.json()).detail ?? "Gagal daftar");
+  return res.json();
+}
+
+export async function checkIn(imageB64:
+  const res = await fetch(`${API}/attendance/check-in`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_b64: imageB64 }),
+  });
+  if (!res.ok) throw new Error((await res.json()).detail ?? "Absen gagal");
+  return res.json();
+}</code></pre>
+</div>
+
+<h3>8.3 app/attendance/page.tsx — Halaman Absensi</h3>
+<div class="card">
+  <pre><code>"use client";
+import { useState } from "react";
+import CameraCapture from "@/components/CameraCapture";
+import { checkIn } from "@/lib/api";
+
+export default function AttendancePage() {
+  const [result, setResult] = useState&lt;string&gt;("");
+  const handleCapture = async (b64: string) => {
+    try {
+      const r = await checkIn(b64);
+      setResult(`✅ ${r.message} — ${r.check_time}`);
+    } catch (e: any) {
+      setResult(`❌ ${e.message}`);
+    }
+  };
+  return (
+    &lt;main style={{ maxWidth: 560+, margin: "auto", padding: 24 }}&gt;
+      &lt;h1&gt;Absensi Wajah&lt;/h1&gt;
+      &lt;CameraCapture onCapture={handleCapture} /&gt;
+      {result && &lt;p style={{ marginTop: 16, fontWeight: 600 }}&gt;{result}&lt;/p&gt;}
+    &lt;/main&gt;
+  );
+}</code></pre>
+</div>
+
+<h2 id="instalasi">9. Instalasi & Menjalankan</h2>
+<div class="card">
+  <h3>Backend</h3>
+  <pre><code>cd backend
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+# System deps (Debian/Ubuntu) untuk dlib
+sudo apt update && sudo apt install -y build-essential cmake libopenblas-dev \
+  liblapack-dev libx11-dev libgtk-3-dev python3-dev
+
+pip install -r requirements.txt
+
+# Infra: postgres + pgvector
+docker compose up -d postgres
+
+# Jalankan API (reload utk dev)
+uvicorn app.main:app --reload --port 8000</code></pre>
+  <h3>Frontend</h3>
+  <pre><code>cd frontend
+npm install
+npm run dev            # http://localhost:3000</code></pre>
+  <h3>requirements.txt (inti)</h3>
+  <pre><code>fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
+pgvector>=0.2
+pydantic-settings>=2.0
+python-multipart>=0.0.9
+face-recognition>=1.3
+opencv-python>=4.8
+numpy>=1.26
+pillow>=10.0
+openpyxl>=3.1</code></pre>
+</div>
+
+<h2 id="produksi">10. Catatan Produksi</h2>
+<div class="card">
+  <ul>
+    <li><strong>Model:</strong> <code>face_recognition</code> (dlib) mudah dipakai; <code>insightface</code> (buffalo_l) akurasi lebih tinggi untuk skala besar.</li>
+    <li><strong>Threshold:</strong> <code>cosine_distance ≤ 0.35</code> — kalibrasi dengan dataset internal kamu (scope: 0.30–0.45).</li>
+    <li><strong>Multi-face:</strong> endpoint menolak bila &gt;1 wajah agar embedding tidak tercampur.</li>
+    <li><strong>Keamanan:</strong> liveness wajib sebelum check-in; simpan screenshot/source sebagai bukti audit; rate-limit endpoint kamera.</li>
+    <li><strong>Skalabilitas:</strong> pindah pencarian vektor ke indeks HNSW (sudah di DDL); batch embedding di Redis queue bila perlu.</li>
+    <li><strong>Idempotensi:</strong> UNIQUE (user_id, check_type, work_date) mencegah absen ganda per hari.</li>
+  </ul>
+</div>
+
+<footer>Dokumen ini dihasilkan oleh AI agent (OpenHands) — panduan arsitektur & kode modul sistem absensi wajah.</footer>
+</div>
+</body>
+</html>
