@@ -1,1 +1,26 @@
-Last updated: 2026-10-23 13:50:26 WIB
+# SistemAbsensiWajah
+
+
+
+## 📋 Overview
+
+This repository contains **26 files** and is built with the following technologies:
+
+HTML
+
+## 🚀 Quick Start
+
+## ✨ Features
+
+- 📝 Auto-generated documentation
+
+## 🛠️ Technologies
+
+HTML
+
+## 📄 License
+
+MIT License
+
+---
+*Last updated: 2026-10-23 13:52:17 WIB*
